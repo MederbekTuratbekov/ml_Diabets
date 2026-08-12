@@ -6,8 +6,8 @@
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110-green)]()
 [![scikit-learn](https://img.shields.io/badge/scikit--learn-1.4-orange)]()
 [![License: MIT](https://img.shields.io/badge/License-MIT-green)]()
-[![F1](https://img.shields.io/badge/F1-0.72-brightgreen)]()
-[![ROC--AUC](https://img.shields.io/badge/ROC--AUC-0.83-brightgreen)]()
+[![F1](https://img.shields.io/badge/F1--weighted-0.75-brightgreen)]()
+[![Model](https://img.shields.io/badge/Model-Logistic%20Regression-blueviolet)]()
 
 ---
 
@@ -17,12 +17,30 @@ Undiagnosed type 2 diabetes affects roughly 1 in 5 adults worldwide, leading to 
 
 ---
 
+## Project Structure
+
+```
+ml_Diabets/
+├── .gitignore
+├── readme.md
+├── requirements.txt
+└── diabetes/
+    ├── Diabetes.ipynb            # EDA + model comparison
+    ├── main.py                   # FastAPI inference service
+    ├── model_log_Diabetes.pkl    # deployed model (Logistic Regression)
+    ├── scaler_Diabetes.pkl       # StandardScaler used at inference
+    ├── dataset/                  # raw data
+    └── Test.txt
+```
+
+---
+
 ## Demo
 
-**POST** `http://127.0.0.1:8000/predict/`
+**POST** `http://127.0.0.1:8000/predict`
 
 ```bash
-curl -X POST "http://127.0.0.1:8000/predict/" \
+curl -X POST "http://127.0.0.1:8000/predict" \
   -H "Content-Type: application/json" \
   -d '{
     "Pregnancies": 2,
@@ -39,25 +57,37 @@ curl -X POST "http://127.0.0.1:8000/predict/" \
 **Response:**
 ```json
 {
-  "approved": true
+  "prediction": 1,
+  "diabetes_detected": true,
+  "message": "Высокая вероятность наличия сахарного диабета",
+  "probability_positive": 71.42,
+  "probability_negative": 28.58
 }
 ```
+
+> `Glucose`, `BloodPressure`, and `BMI` are validated to be strictly greater than 0.
 
 ---
 
 ## Results
 
-| Metric    | Score |
-|-----------|-------|
-| Accuracy  | 79%   |
-| F1-score  | 0.72  |
-| ROC-AUC   | 0.83  |
-| Precision | 0.74  |
-| Recall    | 0.70  |
+Three models were trained and compared on an identical 80/20 stratified split. **Logistic Regression was selected for deployment** — it had the best weighted F1, the smallest train/test gap, and no signs of overfitting.
 
-**Best model:** Random Forest (`n_estimators=100`, `max_depth=6`)  
-**Baseline (Logistic Regression):** F1 = 0.66  
-↑ +9% F1 improvement vs baseline
+| Model | Accuracy | F1 (weighted) | Precision (weighted) | Recall (weighted) | Train Acc. | Test Acc. |
+|---|---|---|---|---|---|---|
+| **Logistic Regression** ✅ deployed | **75.3%** | **0.751** | 0.750 | 0.753 | 0.772 | 0.753 |
+| Random Forest | 74.7% | 0.748 | 0.750 | 0.747 | **1.000** | 0.747 |
+| Decision Tree | 73.4% | 0.736 | 0.740 | 0.734 | **1.000** | 0.734 |
+
+**Class 1 (diabetes-positive) detail — Logistic Regression:**
+
+| Metric | Class 0 (no diabetes) | Class 1 (diabetes) |
+|---|---|---|
+| Precision | 0.80 | 0.67 |
+| Recall | 0.83 | 0.62 |
+| F1-score | 0.81 | 0.64 |
+
+*(support: 99 negative / 55 positive in the 154-row test set)*
 
 ---
 
@@ -66,38 +96,39 @@ curl -X POST "http://127.0.0.1:8000/predict/" \
 - **Source:** Pima Indians Diabetes Database (UCI / Kaggle)
 - **Size:** 768 records
 - **Features:** 8 numeric clinical features (glucose, BMI, age, insulin, etc.) + 1 binary target
-- **Class balance:** 65% negative / 35% positive — handled via stratified train/test split (`stratify=y`)
+- **Class balance:** ~65% negative / ~35% positive — handled via stratified train/test split (`stratify=y`)
 
 ---
 
 ## Approach
 
-1. **Data loading & EDA** — distribution analysis, outlier detection (Glucose < 70, BMI > 40)
-2. **Preprocessing** — StandardScaler fit on train set only, applied to test set (no data leakage)
-3. **Model training** — Logistic Regression, Decision Tree (max_depth=5), Random Forest (max_depth=6, 100 trees)
-4. **Evaluation** — Accuracy, Precision, Recall, F1, full classification report + confusion matrix
-5. **Model persistence** — best model and scaler saved via `joblib`
-6. **Deployment** — FastAPI REST endpoint wraps the inference pipeline end-to-end
+1. **Data loading & EDA** — distribution analysis, outlier detection (`Glucose` < 70, `BMI` > 40)
+2. **Preprocessing** — `StandardScaler` fit on the train set only, applied to the test set (no data leakage)
+3. **Model training** — Logistic Regression, Decision Tree, and Random Forest trained with default hyperparameters and compared side by side
+4. **Evaluation** — Accuracy, weighted Precision/Recall/F1, full `classification_report`, plus a manual train-vs-test accuracy check per model to catch overfitting
+5. **Model selection** — Random Forest and Decision Tree both hit 100% train accuracy with no depth constraint (severe overfitting); Logistic Regression generalized best and was chosen for deployment
+6. **Model persistence** — final model and scaler saved via `joblib`
+7. **Deployment** — FastAPI REST endpoint wraps the inference pipeline end-to-end
 
 ---
 
 ## Key Challenges & Solutions
 
-**Class imbalance (65/35 split)**  
-Default split → biased predictions toward the majority class → added `stratify=y` to `train_test_split`, preserving the class ratio in both folds → Recall on positive class improved from 0.61 to 0.70.
+**Unconstrained tree-based models overfit the training set**
+`RandomForestClassifier()` and `DecisionTreeClassifier()` were trained with default parameters (no `max_depth`) → both reached 100% training accuracy while test accuracy stayed around 73–75% — a ~25-point train/test gap, a clear overfitting signal → rather than force a depth constraint post-hoc, the comparison itself surfaced Logistic Regression as the better generalizer (only a ~2-point gap) → it was selected as the deployed model instead of defaulting to the more "impressive-sounding" ensemble method.
 
-**Data leakage risk**  
-Fitting the scaler on the full dataset before splitting would leak test statistics into training → scaler fitted on `X_train` only, then applied to `X_test` → unbiased evaluation confirmed by consistent train/test gap (< 4%).
+**Class imbalance (65/35 split)**
+Default split → risk of majority-class bias in predictions → added `stratify=y` to `train_test_split`, preserving the class ratio in both folds.
 
-**Model selection without overfitting**  
-Decision Tree without depth constraint overfit (train accuracy 98%, test 72%) → set `max_depth=5` for DT and `max_depth=6` for RF → test accuracy stabilized at 79% with negligible train/test gap.
+**Data leakage risk**
+Fitting the scaler on the full dataset before splitting would leak test statistics into training → scaler fitted on `X_train` only, then applied to `X_test`.
 
 ---
 
 ## Tech Stack
 
 | Category   | Tools                              |
-|------------|------------------------------------|
+|------------|-------------------------------------|
 | Language   | Python 3.11                        |
 | ML         | scikit-learn, joblib               |
 | Data       | pandas, NumPy                      |
@@ -109,13 +140,13 @@ Decision Tree without depth constraint overfit (train accuracy 98%, test 72%) �
 
 ## Deployment
 
-The trained model is served as a REST API using **FastAPI**.
+The trained model is served as a REST API using **FastAPI**. On startup (`lifespan`), the Logistic Regression model and scaler are loaded once into `app.state`.
 
 ```
-POST /predict/
+POST /predict
 ```
 
-The endpoint accepts a JSON body with 8 clinical features and returns `{"approved": true/false}` indicating predicted diabetes risk.
+The endpoint accepts a JSON body with 8 clinical features and returns the predicted class, a human-readable message, and the probability for both classes.
 
 **To run locally:**
 ```bash
@@ -135,11 +166,11 @@ pip install -r requirements.txt
 ```
 
 ```bash
-jupyter notebook diabetes_model.ipynb
+jupyter notebook diabetes/Diabetes.ipynb
 ```
 
 ```bash
-python main.py
+python diabetes/main.py
 ```
 
 ---
@@ -147,14 +178,9 @@ python main.py
 ## Business Impact
 
 - ↓ ~40% reduction in manual screening time per patient (estimated)
-- ↑ ~15% earlier detection rate vs rule-based threshold screening (estimated)
-- ↓ ~25% lower cost per diagnosed case through automated pre-triage (estimated)
+- ↑ Earlier detection flag vs no systematic pre-screening (estimated)
+- ↓ Lower cost per diagnosed case through automated pre-triage (estimated)
 - ↑ Consistent risk scoring across clinics — eliminates inter-clinician variability
 - ↑ Scalable REST API allows integration with EHR systems or mobile health apps
 
 ---
-
-[//]: # (## Author)
-
-[//]: # ()
-[//]: # (**[Your Name]** — [LinkedIn]&#40;https://linkedin.com&#41; | [GitHub]&#40;https://github.com&#41; | [Kaggle]&#40;https://kaggle.com&#41;)
